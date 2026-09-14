@@ -7,7 +7,6 @@ using appropriate commands for each.
 import os
 import subprocess
 from threading import Thread
-from PyQt6.QtCore import QTimer
 
 from neoarch.backend.workers import CommandWorker
 from neoarch.backend import sys_utils
@@ -126,7 +125,6 @@ def uninstall_packages(app, packages_by_source: dict):
                 app.installation_progress.emit("success", False)
             except Exception:
                 pass
-            QTimer.singleShot(0, app.load_installed_packages)
         except Exception as e:
             app.log(f"Error in uninstallation thread: {str(e)}")
     Thread(target=uninstall, daemon=True).start()

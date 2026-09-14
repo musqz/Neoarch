@@ -18,7 +18,7 @@ from neoarch.backend.services.i18n import _
 from neoarch.backend.services.i18n import _
 from neoarch.backend.services.i18n import _
 
-__all__ = ["load_updates", "load_installed_packages"]
+__all__ = ["load_updates", "load_installed_packages", "check_aur_updates"]
 
 
 def _run_cmd(cmd, timeout=60, env=None):
@@ -172,7 +172,7 @@ def _check_pacman_updates():
     return []
 
 
-def _check_aur_updates():
+def check_aur_updates():
     """List available AUR updates via the first AUR helper that reports any.
 
     Helpers are probed concurrently, but only binaries that actually exist
@@ -475,7 +475,7 @@ def load_updates(app):
         try:
             with ThreadPoolExecutor(max_workers=5) as ex:
                 fut_pacman = ex.submit(_check_pacman_updates)
-                fut_aur = ex.submit(_check_aur_updates)
+                fut_aur = ex.submit(check_aur_updates)
                 fut_flatpak = ex.submit(_check_flatpak_updates)
                 fut_npm = ex.submit(_check_npm_updates)
                 # A rootless fresh sync (checkupdates) already refreshes the
@@ -684,7 +684,7 @@ def load_installed_packages(app):
                 app.packages_ready.emit(list(packages), load_id, False)
 
             try:
-                aur_pkg_updates = _check_aur_updates()
+                aur_pkg_updates = check_aur_updates()
                 aur_updates = {p['name']: p.get('new_version', '') for p in aur_pkg_updates}
                 if aur_updates:
                     for pkg in packages:

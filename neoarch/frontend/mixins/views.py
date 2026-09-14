@@ -31,6 +31,7 @@ from neoarch.frontend.components.updates_table import UpdatesTable, _parse_size
 from neoarch.frontend.components.toast import Toast
 from neoarch.frontend.components.installed_table import HoverTableWidget
 from neoarch.backend.services import help as help_service
+from neoarch.backend import sys_utils
 from neoarch.backend.package import loader as packages_service
 from neoarch.backend.package import updater as update_service
 from neoarch.backend.package import uninstaller as uninstall_service
@@ -3762,6 +3763,18 @@ class _ViewsMixin:
                         parts = r.stdout.strip().split('\t')
                         if len(parts) >= 2:
                             new_ver = parts[1]
+                elif source == 'AUR':
+                    # AUR packages aren't in any pacman sync DB, so `pacman -Qu`
+                    # never sees their updates — ask an AUR helper instead.
+                    if sys_utils.get_aur_helper():
+                        aur_updates = {
+                            p['name']: p.get('new_version', '')
+                            for p in packages_service.check_aur_updates()
+                        }
+                        check_ok = True
+                        has_updates = name in aur_updates
+                        if has_updates:
+                            new_ver = aur_updates[name]
                 else:
                     r = subprocess.run(
                         ["pacman", "-Qu", name],
