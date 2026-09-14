@@ -494,12 +494,16 @@ class PackageDetailCard(QFrame):
             self.up_to_date_label.setVisible(False)
         elif view == "discover" and installed:
             self.install_btn.setVisible(False)
-            self.update_btn.setVisible(False)
-            self.uninstall_btn.setVisible(False)
-            self.check_updates_btn.setVisible(True)
-            self.check_updates_btn.setText(_("Check for Updates"))
-            self.check_updates_btn.setEnabled(True)
+            self.uninstall_btn.setVisible(True)
             self.up_to_date_label.setVisible(False)
+            if has_update:
+                self.update_btn.setVisible(True)
+                self.check_updates_btn.setVisible(False)
+            else:
+                self.update_btn.setVisible(False)
+                self.check_updates_btn.setVisible(True)
+                self.check_updates_btn.setText(_("Check for Updates"))
+                self.check_updates_btn.setEnabled(True)
         elif installed:
             if has_update:
                 self.install_btn.setVisible(False)

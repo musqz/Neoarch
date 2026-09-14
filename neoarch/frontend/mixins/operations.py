@@ -852,7 +852,10 @@ class _OperationsMixin:
             self.log("Uninstall cancelled: authentication required.")
             return
         source = pkg.get('source', 'pacman')
-        uninstall_service.uninstall_packages(self, {source: [pkg['name']]})
+        name = (pkg.get('id') or '').strip() if source == 'Flatpak' else (pkg.get('name') or '').strip()
+        if not name:
+            return
+        uninstall_service.uninstall_packages(self, {source: [name]})
 
     def launch_from_detail(self):
         pkg = getattr(self.package_detail_card, '_pkg_data', None)
