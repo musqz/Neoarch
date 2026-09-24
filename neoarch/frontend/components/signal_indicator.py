@@ -8,16 +8,32 @@ latency: no signal, low, medium or high. Icons live in
 import os
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtGui import QColor, QImage, QPixmap
 from PyQt6.QtWidgets import QLabel
 
 from neoarch.backend.services import network_latency
 from neoarch.resources.paths import PROJECT_ROOT
 from neoarch.backend.services.i18n import _
-from neoarch.backend.services.i18n import _
-from neoarch.backend.services.i18n import _
 
 _ICON_DIR = os.path.join(str(PROJECT_ROOT), "assets", "icons", "status")
+
+_NEON = QColor("#00D6D5")
+
+
+def _colorize_green(pixmap):
+    """Recolor the green (filled) bars of a signal icon to neon teal."""
+    image = pixmap.toImage().convertToFormat(QImage.Format.Format_ARGB32)
+    for y in range(image.height()):
+        for x in range(image.width()):
+            c = image.pixelColor(x, y)
+            if c.alpha() == 0:
+                continue
+            r, g, b = c.red(), c.green(), c.blue()
+            # Filled bars are green-dominant; grey placeholder bars stay as-is.
+            if g > r + 12 and g > b + 8:
+                image.setPixelColor(
+                    x, y, QColor(_NEON.red(), _NEON.green(), _NEON.blue(), c.alpha()))
+    return QPixmap.fromImage(image)
 
 _ICONS = {
     "nosignal": "nosignal.png",
@@ -69,7 +85,7 @@ class SignalIndicator(QLabel):
             path = os.path.join(_ICON_DIR, filename)
             pixmap = QPixmap(path)
             if not pixmap.isNull():
-                self._pixmaps[state] = pixmap
+                self._pixmaps[state] = _colorize_green(pixmap)
 
         self._state = "nosignal"
         self._prev_state = None
@@ -84,8 +100,6 @@ class SignalIndicator(QLabel):
 
     def refresh_state(self):
         if not self._baseline_set:
-            if not network_latency.has_samples():
-                return
             self._baseline_set = True
             self._suppress_next_notify = True
 
@@ -94,6 +108,12 @@ class SignalIndicator(QLabel):
             return
 
         avg = network_latency.average()
+        if avg is None:
+            # Fast socket check says online but the HTTP latency probe
+            # hasn't produced a sample yet (slow/failing at launch).
+            # Show a neutral state instead of a false offline indicator.
+            self._render("medium", None)
+            return
         self._render(_state_for(avg), avg)
 
     def _render(self, state, avg):

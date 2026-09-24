@@ -54,8 +54,8 @@ def _askpass_env() -> Optional[dict]:
 def _run_clone(name: str, dest: str) -> bool:
     try:
         result = subprocess.run(
-            ["git", "clone", "--depth", "1", AUR_BASE.format(name=name), dest],
-            capture_output=True, text=True, timeout=300)
+            [shutil.which("git") or "git", "clone", "--depth", "1", AUR_BASE.format(name=name), dest],
+            capture_output=True, text=True, timeout=300, check=False)
         return result.returncode == 0
     except Exception:
         return False
@@ -64,8 +64,8 @@ def _run_clone(name: str, dest: str) -> bool:
 def _checkout_commit(dest: str, commit: str) -> bool:
     try:
         result = subprocess.run(
-            ["git", "-C", dest, "checkout", commit],
-            capture_output=True, text=True, timeout=60)
+            [shutil.which("git") or "git", "-C", dest, "checkout", commit],
+            capture_output=True, text=True, timeout=60, check=False)
         return result.returncode == 0
     except Exception:
         return False
@@ -89,7 +89,7 @@ def _run_build(workdir: str, chroot: bool, run_checks: bool, install: bool,
             proc.wait()
             return subprocess.CompletedProcess(cmd, proc.returncode, "", "")
         return subprocess.run(cmd, capture_output=True, text=True,
-                              timeout=3600, env=env)
+                              timeout=3600, env=env, check=False)
     except Exception as e:
         return subprocess.CompletedProcess(cmd, 1, "", str(e))
 

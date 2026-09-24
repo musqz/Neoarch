@@ -8,6 +8,7 @@ service. Never requires the network at recommendation time.
 
 import json
 import os
+import shutil
 from typing import Dict, List
 
 __all__ = ["CURATED", "recommendations", "set_popularity_cache"]
@@ -70,8 +71,8 @@ def _load_popularity() -> Dict[str, float]:
 def _installed() -> List[str]:
     import subprocess
     try:
-        result = subprocess.run(["pacman", "-Qq"], capture_output=True,
-                                text=True, timeout=30)
+        result = subprocess.run([shutil.which("pacman") or "pacman", "-Qq"], capture_output=True,
+                                text=True, timeout=30, check=False)
         if result.returncode != 0:
             return []
         return [line.strip() for line in result.stdout.splitlines() if line.strip()]

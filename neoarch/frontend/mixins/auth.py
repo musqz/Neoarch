@@ -19,33 +19,35 @@ from neoarch.backend.package.updater import update_core_tools
 
 class DependencyAuthCancelled(RuntimeError):
     """User closed the authentication prompt — setup must stop, not fake success."""
-from neoarch.backend.services.snapshot import (
-    create_snapshot,
-    revert_to_snapshot,
-    delete_snapshots,
-)
 
 
 class _AuthMixin:
-    def get_ignore_file_path(self):
+    @staticmethod
+    def get_ignore_file_path():
         return config_utils.get_ignore_file_path()
 
-    def load_ignored_updates(self):
+    @staticmethod
+    def load_ignored_updates():
         return config_utils.load_ignored_updates()
 
-    def save_ignored_updates(self, items):
+    @staticmethod
+    def save_ignored_updates(items):
         return config_utils.save_ignored_updates(items)
 
-    def get_local_updates_file_path(self):
+    @staticmethod
+    def get_local_updates_file_path():
         return config_utils.get_local_updates_file_path()
 
-    def load_local_update_entries(self):
+    @staticmethod
+    def load_local_update_entries():
         return config_utils.load_local_update_entries()
 
-    def cmd_exists(self, cmd):
+    @staticmethod
+    def cmd_exists(cmd):
         return sys_utils.cmd_exists(cmd)
 
-    def get_missing_dependencies(self):
+    @staticmethod
+    def get_missing_dependencies():
         return sys_utils.get_missing_dependencies()
 
     def run_first_run_checks(self):
@@ -89,6 +91,7 @@ class _AuthMixin:
             Thread(target=self.install_dependencies, args=(missing_required,), daemon=True).start()
 
     def install_dependencies(self, missing):
+        """Attempt to install missing dependencies; returns whether all landed."""
         try:
             from neoarch.backend.session_auth import is_session_active
             self.log(f"Installing missing dependencies: {', '.join(missing)}")
@@ -103,6 +106,7 @@ class _AuthMixin:
                 self._run_sudo_install(["git"])
             pacman_pkgs = [p for p in missing if p not in ("yay or paru", "yay", "paru", "python-supabase")]
             if pacman_pkgs:
+                pacman_pkgs = sys_utils.resolve_pkg_names(pacman_pkgs)
                 self._run_sudo_install(pacman_pkgs)
             if "python-supabase" in missing:
                 self._install_cloud_venv()
@@ -120,8 +124,10 @@ class _AuthMixin:
             if remaining:
                 self.log(f"Could not install: {', '.join(remaining)} (not re-offered this session)")
                 self.show_message.emit(_("Environment"), _("Dependency setup incomplete. Still missing: {list}").format(list=", ".join(remaining)))
+                return False
             else:
                 self.show_message.emit(_("Environment"), _("Dependency setup completed"))
+                return True
         except DependencyAuthCancelled as e:
             self.log(f"Dependency setup cancelled: {e}")
             self.show_message.emit(
@@ -131,6 +137,7 @@ class _AuthMixin:
         except Exception as e:
             self.log(f"Setup failed: {str(e)}")
             self.show_message.emit(_("Environment"), _("Setup failed: {e}").format(e=str(e)))
+            return False
 
     def _run_sudo_install(self, packages):
         done = Event()
@@ -162,13 +169,13 @@ class _AuthMixin:
         tmpdir = tempfile.mkdtemp(prefix="neoarch-yay-")
         try:
             self.log("Installing yay AUR helper...")
-            clone = subprocess.run(["git", "clone", "https://aur.archlinux.org/yay-bin.git", tmpdir], capture_output=True, text=True, timeout=120)
+            clone = subprocess.run([shutil.which("git") or "git", "clone", "https://aur.archlinux.org/yay-bin.git", tmpdir], capture_output=True, text=True, timeout=120, check=False)
             if clone.returncode != 0:
                 self.log(f"Error: {clone.stderr}")
                 return
             env, cleanup = self.prepare_askpass_env()
             cmd = f"cd '{tmpdir}' && makepkg -si --noconfirm"
-            process = subprocess.Popen(["bash", "-lc", cmd], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+            process = subprocess.Popen([shutil.which("bash") or "bash", "-lc", cmd], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
             while True:
                 line = process.stdout.readline() if process.stdout else ""
                 if not line and process.poll() is not None:
@@ -209,26 +216,63 @@ class _AuthMixin:
             return
         return update_core_tools(self)
 
-    def prepare_askpass_env(self):
+    @staticmethod
+    def prepare_askpass_env():
         from neoarch.backend.auth import prepare_askpass_env
         return prepare_askpass_env()
 
-    def get_askpass_env(self):
+    @staticmethod
+    def get_askpass_env():
         return _get_askpass_env()
 
-    def check_authentication_tools(self):
+    @staticmethod
+    def check_authentication_tools():
         # NeoArch ships its own themed authentication dialog with session
         # caching; no external GUI auth tools are required anymore.
         pass
 
+    @staticmethod
+    def _snapshot_engine(settings):
+        """Return the snapshot service module matching the configured backend."""
+        if settings.get('snapshot_backend') == 'snapper':
+            from neoarch.backend.services import snapper
+            return snapper
+        from neoarch.backend.services import snapshot as snapshot_svc
+        return snapshot_svc
+
     def create_snapshot(self):
-        return create_snapshot(self)
+        if not self.ensure_session_auth():
+            self.log("Snapshot cancelled: authentication required.")
+            return
+        return self._snapshot_engine(self.settings).create_snapshot(self)
 
     def revert_to_snapshot(self):
-        return revert_to_snapshot(self)
+        if not self.ensure_session_auth():
+            self.log("Snapshot cancelled: authentication required.")
+            return
+        return self._snapshot_engine(self.settings).revert_to_snapshot(self)
 
     def delete_snapshots(self):
-        return delete_snapshots(self)
+        if not self.ensure_session_auth():
+            self.log("Snapshot cancelled: authentication required.")
+            return
+        return self._snapshot_engine(self.settings).delete_snapshots(self)
+
+    def install_snapshot_hooks(self):
+        """Install system-wide pacman snapper hooks (Snapper only)."""
+        if not self.ensure_session_auth():
+            self.log("Hook install cancelled: authentication required.")
+            return
+        from neoarch.backend.services.snapper import install_pacman_hooks
+        install_pacman_hooks(self)
+
+    def remove_snapshot_hooks(self):
+        """Remove the system-wide pacman snapper hooks."""
+        if not self.ensure_session_auth():
+            self.log("Hook removal cancelled: authentication required.")
+            return
+        from neoarch.backend.services.snapper import remove_pacman_hooks
+        remove_pacman_hooks(self)
 
     # ── Built-in backup (replaces timeshift as default) ──
 

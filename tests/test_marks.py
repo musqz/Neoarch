@@ -113,7 +113,7 @@ def test_holdpkg_roundtrip_dispatch(tmp_path, monkeypatch):
 
     def fake_run(cmd, timeout=600, env=None, **kw):
         calls.append(cmd)
-        assert f"HoldPkg = linux" in " ".join(cmd)
+        assert "HoldPkg = linux" in " ".join(cmd)
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(marks, "get_auth_command", lambda: ["sudo", "-A"])
@@ -145,6 +145,23 @@ def test_get_install_reason_missing(monkeypatch):
                         lambda cmd, **k: subprocess.CompletedProcess(
                             cmd, 1, stdout="", stderr="error"))
     assert marks.get_install_reason("nope") is None
+
+
+def test_get_install_reason_forces_c_locale(monkeypatch):
+    """pacman -Qi must be parsed with C locale so the English
+    'Install Reason' regex matches on localized systems."""
+    captured = {}
+
+    def fake_run(cmd, **k):
+        captured["env"] = k.get("env")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert marks.get_install_reason("firefox") is None
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["LC_ALL"] == "C"
+    assert "LANG" not in env
 
 
 def test_set_install_reason_explicit(monkeypatch):

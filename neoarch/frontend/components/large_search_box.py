@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from threading import Thread
 
@@ -96,7 +97,8 @@ class LargeSearchBox(QWidget):
         self.setStyleSheet(self._qss())
 
     # ── Hero Search ────────────────────────────────────────────────
-    def _hero_header(self) -> QHBoxLayout:
+    @staticmethod
+    def _hero_header() -> QHBoxLayout:
         header = QHBoxLayout()
         header.setContentsMargins(4, 0, 0, 0)
 
@@ -402,7 +404,7 @@ class LargeSearchBox(QWidget):
         def _run():
             installed_count = 0
             try:
-                r = subprocess.run(["pacman", "-Q"], capture_output=True, text=True, timeout=3)
+                r = subprocess.run([shutil.which("pacman") or "pacman", "-Q"], capture_output=True, text=True, timeout=3, check=False)
                 if r.returncode == 0:
                     installed_count = len([l for l in r.stdout.strip().split("\n") if l.strip()])
             except Exception:
@@ -413,7 +415,7 @@ class LargeSearchBox(QWidget):
                 updates_count = len(cached_updates)
             else:
                 try:
-                    r = subprocess.run(["checkupdates"], capture_output=True, text=True, timeout=5)
+                    r = subprocess.run([shutil.which("checkupdates") or "checkupdates"], capture_output=True, text=True, timeout=5, check=False)
                     if r.returncode == 0 and r.stdout.strip():
                         updates_count = len(r.stdout.strip().split("\n"))
                 except Exception:
@@ -423,7 +425,7 @@ class LargeSearchBox(QWidget):
             for cmd in (["which", "yay", "paru"], ["flatpak", "list"],
                         ["which", "npm"], ["which", "docker"]):
                 try:
-                    r = subprocess.run(cmd, capture_output=True, text=True, timeout=2)
+                    r = subprocess.run(cmd, capture_output=True, text=True, timeout=2, check=False)
                     if r.returncode == 0 and r.stdout.strip():
                         sources_count += 1
                 except Exception:
@@ -520,7 +522,8 @@ class LargeSearchBox(QWidget):
             pass
         label.setText("🔍")
 
-    def _qss(self):
+    @staticmethod
+    def _qss():
         return """
             LargeSearchBox {
                 background-color: transparent;

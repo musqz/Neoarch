@@ -1,11 +1,12 @@
 """Package loading operations.
 
 Loads installed packages and available updates from all sources
-(pacman, AUR, Flatpak, npm, Local) for display in the UI.
+(pacman, AUR, Flatpak, npm, Firmware, pipx) for display in the UI.
 """
 
 import os
 import json
+import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Thread
@@ -15,15 +16,13 @@ from neoarch.backend import sys_utils
 from neoarch.backend.auth import get_askpass_env
 from neoarch.backend.workers import CommandWorker
 from neoarch.backend.services.i18n import _
-from neoarch.backend.services.i18n import _
-from neoarch.backend.services.i18n import _
 
 __all__ = ["load_updates", "load_installed_packages", "check_aur_updates"]
 
 
 def _run_cmd(cmd, timeout=60, env=None):
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env, check=False)
     except FileNotFoundError:
         return None
     except Exception:
@@ -359,6 +358,237 @@ def _check_npm_updates():
     return packages
 
 
+def _parse_pipx_list(stdout):
+    """Parse ``pipx list --json`` snapshot into installed pipx apps.
+
+    The snapshot maps venv name -> metadata; the venv name is the identifier
+    ``pipx upgrade`` accepts, and ``main_package.package_version`` is the
+    installed version. Entries without a version are still listed (they may
+    be non-index installs) but carry an empty version.
+    """
+    packages = []
+    raw = (stdout or '').strip()
+    if not raw:
+        return packages
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return packages
+    venvs = data.get('venvs') if isinstance(data, dict) else None
+    if not isinstance(venvs, dict):
+        return packages
+    for name, venv in venvs.items():
+        if not isinstance(venv, dict):
+            continue
+        meta = venv.get('metadata') if isinstance(venv.get('metadata'), dict) else venv
+        main = meta.get('main_package') if isinstance(meta, dict) else None
+        if isinstance(main, dict):
+            version = (main.get('package_version') or main.get('version') or '').strip()
+        elif isinstance(meta, dict):
+            version = (meta.get('package_version') or '').strip()
+        else:
+            version = ''
+        packages.append({
+            'name': name,
+            'version': version,
+            'new_version': '',
+            'id': name,
+            'source': 'pipx',
+        })
+    return packages
+
+
+def _parse_pipx_outdated(stdout):
+    """Parse ``pipx list --outdated`` output into a ``name -> new version`` map.
+
+    Modern pipx prints ``name: current -> latest`` per line (package names
+    only; injected/pinned entries carry text between the name and the colon,
+    so they never match). Older pipx versions printed a bare two-token
+    ``name current`` line under an "outdated packages" heading — that layout
+    is parsed as a fallback with an empty new version.
+    """
+    outdated = {}
+    text = (stdout or '').strip()
+    if not text:
+        return outdated
+    arrow = re.compile(
+        r'^\s*([A-Za-z][\w.\-]*[A-Za-z0-9]?)\s*:\s*([\w.!+\-]+)\s*(?:->|→)\s*([\w.!+\-]+)\s*$')
+    plain = re.compile(r'^\s*([A-Za-z][\w.\-]*[A-Za-z0-9]?)\s+([\w.!+\-]+)\s*$')
+    in_section = False
+    for line in text.split('\n'):
+        low = line.lower()
+        if ('outdated' in low and (':' not in line or line.lstrip().lower().startswith('the'))):
+            in_section = True
+            continue
+        m = arrow.search(line)
+        if m:
+            name, _cur, new = m.groups()
+            if name and name != new and name not in outdated:
+                outdated[name] = new
+            continue
+        if in_section:
+            m = plain.search(line)
+            if m:
+                name, ver = m.groups()
+                if name and ver and name not in outdated:
+                    outdated[name] = ''
+    return outdated
+
+
+def _pipx_install_state():
+    """Return installed pipx apps plus the ``name -> new version`` outdated map."""
+    installed = _run_cmd(["pipx", "list", "--json"], timeout=90)
+    packages = _parse_pipx_list(installed.stdout if installed else None)
+    outdated = _run_cmd(["pipx", "list", "--outdated"], timeout=180,
+                        env=sys_utils.c_locale_env())
+    latest = _parse_pipx_outdated(outdated.stdout if outdated else None)
+    return packages, latest
+
+
+def _check_pipx_updates():
+    """List available pipx app updates (runs entirely as the current user)."""
+    if not sys_utils.pipx_source_enabled():
+        return []
+    if not sys_utils.cmd_exists("pipx"):
+        return []
+    packages, latest = _pipx_install_state()
+    if not packages or not latest:
+        return []
+    updates = []
+    for pkg in packages:
+        new_version = latest.get(pkg['id'])
+        if new_version is None:
+            continue
+        pkg['new_version'] = str(new_version)
+        updates.append(pkg)
+    return updates
+
+
+def _check_pipx_installed():
+    """List installed pipx apps with their update status (Installed page)."""
+    if not sys_utils.pipx_source_enabled():
+        return []
+    if not sys_utils.cmd_exists("pipx"):
+        return []
+    packages, latest = _pipx_install_state()
+    for pkg in packages:
+        new_version = latest.get(pkg['id'])
+        pkg['has_update'] = new_version is not None
+        if new_version is not None:
+            pkg['new_version'] = str(new_version)
+    return packages
+
+
+def _parse_fwupd_json(stdout):
+    """Parse ``fwupdmgr get-updates --json`` output into update entries.
+
+    Handles both modern (lowercase) and legacy (PascalCase) field names.
+    Returns a list of ``{name, version, new_version, id, source}`` dicts.
+    """
+    packages = []
+    raw = (stdout or '').strip()
+    if not raw:
+        return packages
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return packages
+    if not isinstance(data, dict):
+        return packages
+    devices = data.get('devices') or data.get('Devices') or []
+    for dev in devices:
+        if not isinstance(dev, dict):
+            continue
+        updates = dev.get('updates') or dev.get('Updates') or []
+        if not updates:
+            continue
+        dev_name = dev.get('name') or dev.get('Name') or ''
+        installed = (dev.get('installed-version') or dev.get('InstalledVersion') or '')
+        for upd in updates:
+            if not isinstance(upd, dict):
+                continue
+            name = upd.get('name') or upd.get('Name') or dev_name
+            new_version = (upd.get('new-version') or upd.get('NewVersion')
+                           or upd.get('version') or upd.get('Version') or '')
+            if not name or not new_version:
+                continue
+            packages.append({
+                'name': dev_name or name,
+                'version': installed,
+                'new_version': new_version,
+                'id': upd.get('id') or upd.get('Id') or name,
+                'source': 'Firmware',
+                'download_size': upd.get('size') or upd.get('Size') or '',
+                'description': (upd.get('description')
+                                or upd.get('Description') or '').strip(),
+            })
+    return packages
+
+
+def _parse_fwupd_text(stdout):
+    """Parse plain-text ``fwupdmgr get-updates`` output (legacy fallback).
+
+    The human-readable output groups "New version:" lines under device
+    headings drawn with tree-branch characters, so we track the most
+    recent heading and pair it with the version.
+    """
+    packages = []
+    device = ''
+    for line in (stdout or '').splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        low = text.lower()
+        if 'new version:' in low and not low.startswith('no '):
+            new_version = text.split(':', 1)[1].strip()
+            if new_version and new_version.lower() not in ('n/a', 'none'):
+                packages.append({
+                    'name': device or new_version,
+                    'version': '',
+                    'new_version': new_version,
+                    'id': f"{device or new_version}@{new_version}",
+                    'source': 'Firmware',
+                })
+            continue
+        # A tree-branch line either names a device or indents its details.
+        if text[0] in ('├', '└', '│', '─'):
+            heading = text.lstrip('├│└─ ').strip()
+            if heading:
+                device = heading.rstrip(':').strip()
+            continue
+        if ':' in text:
+            continue
+        device = text
+    return packages
+
+
+_FWUPD_REFRESH_ONCE = False
+
+
+def _check_fwupd_updates():
+    """List available firmware updates via fwupdmgr.
+
+    Refreshes the LVFS/LVFS-TEST metadata cache at most once per session
+    (the start-up check), then lists devices with pending updates. Firmware
+    is never applied here — that is always an explicit user action.
+    """
+    global _FWUPD_REFRESH_ONCE
+    if not sys_utils.cmd_exists("fwupdmgr"):
+        return []
+    if not _FWUPD_REFRESH_ONCE:
+        _FWUPD_REFRESH_ONCE = True
+        _run_cmd(["fwupdmgr", "refresh", "--force", "--quiet"], timeout=120,
+                 env=sys_utils.c_locale_env())
+    rt = _run_cmd(["fwupdmgr", "get-updates", "--json"], timeout=60,
+                  env=sys_utils.c_locale_env())
+    packages = _parse_fwupd_json(rt.stdout if rt else None)
+    if packages:
+        return packages
+    txt = _run_cmd(["fwupdmgr", "get-updates"], timeout=60,
+                   env=sys_utils.c_locale_env())
+    return _parse_fwupd_text(txt.stdout if txt else None)
+
+
 def _sync_pacman_db(app):
     if not session_auth.is_session_active():
         app.log("Skipping database sync: not authenticated in this session")
@@ -473,11 +703,16 @@ def load_updates(app):
 
     def load_in_thread():
         try:
-            with ThreadPoolExecutor(max_workers=5) as ex:
+            with ThreadPoolExecutor(max_workers=6) as ex:
                 fut_pacman = ex.submit(_check_pacman_updates)
                 fut_aur = ex.submit(check_aur_updates)
                 fut_flatpak = ex.submit(_check_flatpak_updates)
                 fut_npm = ex.submit(_check_npm_updates)
+                fut_firmware = (ex.submit(_check_fwupd_updates)
+                                if sys_utils.firmware_source_enabled() else None)
+                fut_pipx = (ex.submit(_check_pipx_updates)
+                            if sys_utils.pipx_source_enabled()
+                            and sys_utils.cmd_exists("pipx") else None)
                 # A rootless fresh sync (checkupdates) already refreshes the
                 # data; only sync the real database when that is unavailable.
                 import shutil as _sh
@@ -492,42 +727,9 @@ def load_updates(app):
                     except Exception:
                         pass
 
-                def finalize(pkgs, add_local=True):
-                    """Merge local update entries, drop ignored ones, and dedupe."""
+                def finalize(pkgs):
+                    """Drop ignored ones, and dedupe."""
                     out = list(pkgs or [])
-                    if add_local and sys_utils.local_source_enabled():
-                        try:
-                            entries = app.load_local_update_entries()
-                            for e in entries:
-                                name = (e.get('name') or '').strip()
-                                if not name:
-                                    continue
-                                installed = (e.get('installed_version') or '').strip()
-                                if not installed and e.get('installed_version_cmd'):
-                                    try:
-                                        r = subprocess.run(["bash", "-lc", e['installed_version_cmd']], capture_output=True, text=True, timeout=30)
-                                        if r.returncode == 0:
-                                            installed = (r.stdout or '').strip().splitlines()[0].strip()
-                                    except Exception:
-                                        installed = ''
-                                latest = (e.get('latest_version') or '').strip()
-                                if not latest and e.get('latest_version_cmd'):
-                                    try:
-                                        r = subprocess.run(["bash", "-lc", e['latest_version_cmd']], capture_output=True, text=True, timeout=30)
-                                        if r.returncode == 0:
-                                            latest = (r.stdout or '').strip().splitlines()[0].strip()
-                                    except Exception:
-                                        latest = ''
-                                if installed and latest and installed != latest:
-                                    out.append({
-                                        'name': name,
-                                        'version': installed,
-                                        'new_version': latest,
-                                        'id': (e.get('id') or name),
-                                        'source': 'Local'
-                                    })
-                        except Exception:
-                            pass
                     try:
                         ignored = app.load_ignored_updates()
                         if ignored:
@@ -564,7 +766,8 @@ def load_updates(app):
                 # First paint: pacman updates land as soon as their check
                 # finishes (the first-run DB sync is the slow part), so the
                 # table shows data immediately instead of a long loading
-                # animation. AUR/Flatpak/npm results follow in the final emit.
+                # animation. AUR/Flatpak/npm/Firmware results follow in the
+                # final emit.
                 pacman_pkgs = _safe_result(fut_pacman, "pacman")
                 initial = finalize(list(pacman_pkgs))
                 if initial and not is_stale():
@@ -582,7 +785,11 @@ def load_updates(app):
                 for fut, label in ((fut_aur, "AUR"), (fut_flatpak, "Flatpak"),
                                    (fut_npm, "npm")):
                     packages.extend(_safe_result(fut, label))
-                packages = finalize(packages, add_local=False)
+                if fut_firmware is not None:
+                    packages.extend(_safe_result(fut_firmware, "Firmware"))
+                if fut_pipx is not None:
+                    packages.extend(_safe_result(fut_pipx, "pipx"))
+                packages = finalize(packages)
 
                 sources = {p.get("source") for p in packages}
                 if "pacman" not in sources:
@@ -835,6 +1042,9 @@ def load_installed_packages(app):
                 fut_flatpak = ex.submit(_check_flatpak_installed)
                 fut_npm_inst = ex.submit(_check_npm_installed)
                 fut_npm_out = ex.submit(_check_npm_outdated)
+                fut_pipx = (ex.submit(_check_pipx_installed)
+                            if sys_utils.pipx_source_enabled()
+                            and sys_utils.cmd_exists("pipx") else None)
 
                 fp_result, installed_map = fut_flatpak.result()
                 packages.extend(fp_result)
@@ -843,6 +1053,9 @@ def load_installed_packages(app):
                 packages.extend(npm_pkgs)
 
                 outdated = fut_npm_out.result()
+
+                if fut_pipx is not None:
+                    packages.extend(fut_pipx.result() or [])
 
             update_ids = _check_flatpak_updates_installed(installed_map)
             if update_ids:
@@ -855,42 +1068,6 @@ def load_installed_packages(app):
                     if pkg.get('source') == 'npm' and pkg.get('name') in outdated:
                         pkg['has_update'] = True
                         pkg['new_version'] = outdated[pkg['name']]
-
-            try:
-                entries = app.load_local_update_entries() \
-                    if sys_utils.local_source_enabled() else []
-                for e in entries:
-                    name = (e.get('name') or '').strip()
-                    if not name:
-                        continue
-                    installed = (e.get('installed_version') or '').strip()
-                    if not installed and e.get('installed_version_cmd'):
-                        try:
-                            r = subprocess.run(["bash", "-lc", e['installed_version_cmd']], capture_output=True, text=True, timeout=30)
-                            if r.returncode == 0 and r.stdout:
-                                installed = (r.stdout or '').strip().splitlines()[0].strip()
-                        except Exception:
-                            installed = ''
-                    latest = (e.get('latest_version') or '').strip()
-                    if not latest and e.get('latest_version_cmd'):
-                        try:
-                            r = subprocess.run(["bash", "-lc", e['latest_version_cmd']], capture_output=True, text=True, timeout=30)
-                            if r.returncode == 0 and r.stdout:
-                                latest = (r.stdout or '').strip().splitlines()[0].strip()
-                        except Exception:
-                            latest = ''
-                    if installed:
-                        pkg = {
-                            'name': name,
-                            'version': installed,
-                            'new_version': latest or installed,
-                            'id': (e.get('id') or name),
-                            'source': 'Local',
-                            'has_update': (bool(latest) and latest != installed)
-                        }
-                        packages.append(pkg)
-            except Exception:
-                pass
 
             try:
                 ignored = app.load_ignored_updates()

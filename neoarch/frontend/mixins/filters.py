@@ -267,7 +267,8 @@ class _BundlesSourcePanel(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._init_ui()
 
-    def _section_header(self, text):
+    @staticmethod
+    def _section_header(text):
         label = QLabel(text.upper())
         label.setStyleSheet(f"""
             color: {Colors.ACCENT};
@@ -404,7 +405,8 @@ class _BundlesSourcePanel(QWidget):
         sec.setStyleSheet(self._SECTION_SS)
         layout.addWidget(sec)
 
-    def _get_panel_icon(self, path, size=18):
+    @staticmethod
+    def _get_panel_icon(path, size=18):
         pixmap = QPixmap(path)
         if pixmap.isNull():
             pixmap = QPixmap(QSize(size, size))
@@ -933,6 +935,7 @@ class _FiltersMixin:
         ])
         self.source_card.set_sort("relevance", True)
 
+        self._disable_unavailable_sources()
         self.sources_layout.addWidget(self.source_card)
         self.source_card.maintenance_action.connect(self.on_installed_maintenance_action)
         self.source_card.configure_sections(
@@ -968,6 +971,30 @@ class _FiltersMixin:
         except Exception:
             pass
 
+    def _disable_unavailable_sources(self):
+        """Disable source rows whose backing tool is not installed.
+
+        Leaves the row visible but inert (clicks are ignored) and replaces
+        the tooltip with a safe install path, matching the General settings
+        page.  Re-runs cheaply every time a source card is (re)built, so a
+        tool installed mid-session is picked up on the next page refresh.
+        """
+        for source_name, binary, pkg in (
+            ("Flatpak", "flatpak", "flatpak"),
+            ("npm", "npm", "npm"),
+            ("Firmware", "fwupdmgr", "fwupd"),
+            ("pipx", "pipx", "python-pipx"),
+        ):
+            item = self.source_card.sources.get(source_name)
+            if item is None:
+                continue
+            if self.cmd_exists(binary):
+                continue
+            item.setEnabled(False)
+            item.setToolTip(
+                _("{tool} is not installed — install with: sudo pacman -S {pkg}")
+                .format(tool=source_name, pkg=pkg))
+
     def update_updates_sources(self):
         while self.sources_layout.count():
             item = self.sources_layout.takeAt(0)
@@ -979,10 +1006,29 @@ class _FiltersMixin:
             ("AUR", os.path.join(_BASE_DIR, "assets", "icons", "sources", "aur.svg")),
             ("Flatpak", os.path.join(_BASE_DIR, "assets", "icons", "sources", "flatpack.svg")),
             ("npm", os.path.join(_BASE_DIR, "assets", "icons", "sources", "node.svg")),
-            ("Local", os.path.join(_BASE_DIR, "assets", "icons", "sources", "local.svg"))
+            ("Firmware", os.path.join(_BASE_DIR, "assets", "icons", "sources", "firmware.svg")),
+            ("pipx", os.path.join(_BASE_DIR, "assets", "icons", "sources", "pipx.svg")),
         ]
         for source_name, source_icon_path in sources:
             self.source_card.add_source(source_name, source_icon_path)
+        # The pacman package "linux-firmware" is a regular repo update, NOT a
+        # fwupd device update; label the toggle with a smaller font so the
+        # count badge still has room, and keep the clarifying tooltip.
+        try:
+            fw = self.source_card.sources["Firmware"]
+            fw.name_label.setText("Firmware (fwupd)")
+            fw.name_label.setStyleSheet(
+                f"color: {Colors.TEXT}; font-size: {Fonts.XS};"
+                " font-weight: 500; background: transparent; border: none;")
+            fw.setToolTip(
+                _("BIOS/UEFI and device firmware via fwupd.\n"
+                  "The linux-firmware package is a pacman update, not this source."))
+        except Exception:
+            pass
+        # Tools not present on the system can't produce updates: keep the row
+        # visible but inert, with a safe install path in the tooltip (same
+        # contract as the General settings page).
+        self._disable_unavailable_sources()
         self.sources_layout.addWidget(self.source_card)
         self.source_card.source_changed.connect(self.on_updates_source_changed)
         self.source_card.search_mode_changed.connect(self.on_search_mode_changed)
@@ -1020,6 +1066,7 @@ class _FiltersMixin:
         ]
         for source_name, source_icon_path in sources:
             self.source_card.add_source(source_name, source_icon_path)
+        self._disable_unavailable_sources()
         self.sources_layout.addWidget(self.source_card)
         self.source_card.health_action.connect(self.on_installed_health_action)
         self.source_card.sort_changed.connect(self.apply_filters)
@@ -1345,13 +1392,15 @@ class _FiltersMixin:
     def on_updates_source_changed(self, source_states):
         self._recompute_updates()
 
-    def _pkg_status(self, pkg):
+    @staticmethod
+    def _pkg_status(pkg):
         try:
             return pkg.get("status") or classify_update(pkg.get("version"), pkg.get("new_version"))
         except Exception:
             return "Maintenance"
 
-    def _matches_query(self, pkg, query, mode):
+    @staticmethod
+    def _matches_query(pkg, query, mode):
         name = (pkg.get('name') or '').lower()
         pid = (pkg.get('id') or pkg.get('name') or '').lower()
         if mode == 'name':
@@ -1360,7 +1409,8 @@ class _FiltersMixin:
             return query in pid
         return query in name or query in pid
 
-    def _sort_updates(self, dataset, field, asc):
+    @staticmethod
+    def _sort_updates(dataset, field, asc):
         try:
             if field == 'size':
                 def key(p): return _parse_size(p.get('download_size') or '')

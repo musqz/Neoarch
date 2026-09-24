@@ -2,7 +2,7 @@
 
 import pytest
 from PyQt6.QtCore import QObject, pyqtSignal, Qt
-from PyQt6.QtWidgets import QApplication, QPushButton
+from PyQt6.QtWidgets import QApplication
 
 from neoarch.frontend.components.packages_grid_view import PackageCard
 from neoarch.frontend.components.plugins_view import PluginsView, _PluginPackageCard
@@ -146,6 +146,97 @@ def test_package_source_resolution_for_cards(qapp):
     assert _canonical_source("flatpak") == "Flatpak"
 
 
+def test_plain_pkg_strips_source_prefixes(qapp):
+    from neoarch.frontend.components.plugins_view import _plain_pkg
+    assert _plain_pkg("aur/yay") == "yay"
+    assert _plain_pkg("npm-typescript") == "typescript"
+    assert _plain_pkg("brew-fd") == "fd"
+    assert _plain_pkg("org.gnome.Evolution.flatpak") == "org.gnome.Evolution"
+    assert _plain_pkg("pandoc") == "pandoc"
+    assert _plain_pkg("") == ""
+
+
+def test_prewarm_installed_cache_detects_meta_package_via_cmd(qapp, monkeypatch):
+    """A plugin whose pkg is a meta package (e.g. QEMU's 'qemu-full') must
+    still be marked installed when the launcher binary exists, even if the
+    meta package name is missing from `pacman -Qq` (split package install)."""
+    import neoarch.frontend.components.plugins_view as pv_mod
+    specs = [
+        {"id": "qemu", "name": "QEMU", "pkg": "qemu-full", "cmd": "qemu-system-x86_64"},
+        {"id": "optipng", "name": "Image Optimizer", "pkg": "optipng", "cmd": "optipng"},
+    ]
+    monkeypatch.setattr(pv_mod, "get_plugins_data", lambda: specs)
+    monkeypatch.setattr("neoarch.resources.plugin_data.get_all_plugins_data", lambda: specs)
+
+    import subprocess
+    called = []
+
+    def fake_run(cmd, capture_output=True, text=True, timeout=5, check=False):
+        called.append(cmd)
+        return type("R", (), {"returncode": 0, "stdout": "optipng\n"})()  # no qemu-full
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(pv_mod.shutil, "which",
+                        lambda name: "/usr/bin/" + name if name == "qemu-system-x86_64" else None)
+
+    view = PluginsView.__new__(PluginsView)
+    view._installed_cache = {}
+    view._prewarm_installed_cache()
+
+    assert view._installed_cache == {"qemu": True, "optipng": True}
+    assert any(a == "pacman" or "-Qq" in a for a in called)
+
+
+def test_is_installed_strips_aur_prefix_before_pacman_qi(qapp, monkeypatch):
+    """is_installed must query the plain package name, not the 'aur/' prefixed
+    pkg string, or an installed AUR package is reported as missing."""
+    import neoarch.frontend.components.plugins_view as pv_mod
+    import subprocess
+    seen = []
+    monkeypatch.setattr(pv_mod.shutil, "which", lambda name: None)
+
+    def fake_run(cmd, capture_output=True, text=True, timeout=5, check=False):
+        seen.append(cmd)
+        return type("R", (), {"returncode": 0, "stdout": ""})()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    view = PluginsView.__new__(PluginsView)
+    view._installed_cache = {}
+    assert view.is_installed({"id": "aur-yay", "pkg": "aur/yay", "cmd": None}) is True
+    assert "-Qi" in seen[0] and seen[0][-1] == "yay"
+
+
+def test_get_plugin_resolves_live_search_specs(qapp):
+    """Cards created from pacman/AUR live-search results carry prefixed ids
+    ('pacman-pandoc'); get_plugin must resolve them so batch installs no longer
+    collapse into the misleading 'Nothing to install' path."""
+    view = PluginsView.__new__(PluginsView)
+    view.plugins = []
+    spec = {"id": "pacman-pandoc", "name": "pandoc", "pkg": "pandoc", "cmd": None}
+    view._dynamic_specs = {"pacman-pandoc": spec}
+    assert view.get_plugin("pacman-pandoc") is spec
+    assert view.get_plugin("pacman-missing") is None
+
+
+def test_live_search_ready_stores_dynamic_specs(qapp, monkeypatch):
+    """_on_live_search_ready must record non-curated specs so get_plugin can
+    find them later (install/extend via Batch install)."""
+    import neoarch.frontend.components.plugins_view as pv_mod
+    monkeypatch.setattr(pv_mod.PluginsView, "is_installed", lambda self, spec: False)
+    monkeypatch.setattr(pv_mod.PluginsView, "create_app_card",
+                        lambda self, spec, parent, installed: None)
+    monkeypatch.setattr(pv_mod.PluginsView, "_sort_cards", lambda self, cards: cards)
+    monkeypatch.setattr(pv_mod.PluginsView, "_refresh_content", lambda self: None)
+    view = PluginsView(None, lambda *a: None)
+    view._dynamic_specs.clear()
+    view._pending_live_query = "pandoc"
+    spec = {"id": "pacman-pandoc", "name": "pandoc", "pkg": "pandoc"}
+    view._on_live_search_ready(("pandoc", [spec]))
+    resolved = view.get_plugin("pacman-pandoc")
+    assert resolved is not None and resolved["id"] == "pacman-pandoc" and resolved["pkg"] == "pandoc"
+
+
 def test_plugin_card_double_click_launches_when_installed(qapp):
     from PyQt6.QtCore import QPointF
     from PyQt6.QtGui import QMouseEvent
@@ -153,7 +244,7 @@ def test_plugin_card_double_click_launches_when_installed(qapp):
 
     launched = []
     inst = _PluginPackageCard(_spec(pid="htop"), True, None)
-    inst.launch_clicked.connect(lambda pid: launched.append(pid))
+    inst.launch_clicked.connect(launched.append)
     inst.mouseDoubleClickEvent(QMouseEvent(
         QEvent.Type.MouseButtonDblClick, QPointF(10, 10), Qt.MouseButton.LeftButton,
         Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier))
@@ -161,7 +252,7 @@ def test_plugin_card_double_click_launches_when_installed(qapp):
 
     launched.clear()
     avail = _PluginPackageCard(_spec(pid="bob"), False, None)
-    avail.launch_clicked.connect(lambda pid: launched.append(pid))
+    avail.launch_clicked.connect(launched.append)
     avail.mouseDoubleClickEvent(QMouseEvent(
         QEvent.Type.MouseButtonDblClick, QPointF(10, 10), Qt.MouseButton.LeftButton,
         Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier))
@@ -171,6 +262,13 @@ def test_plugin_card_double_click_launches_when_installed(qapp):
 def _card_spec(pid, installed=False, category="", source="pacman"):
     return {"plugin": {"id": pid, "name": pid.capitalize(), "category": category, "pkg": source},
             "installed": installed, "widget": None}
+
+
+def _card_by_id(view, pid):
+    for entry in view._all_cards:
+        if entry["plugin"]["id"] == pid:
+            return entry
+    return None
 
 
 def test_plugins_view_sort_cards_orders_by_mode(qapp):
@@ -195,6 +293,8 @@ class _FakeLegacyWidget:
     def __init__(self, name):
         self.name = name
         self._vis = True
+        self._cleared = False
+        self._relaid_out = False
 
     def setVisible(self, v):
         self._vis = bool(v)
@@ -203,10 +303,10 @@ class _FakeLegacyWidget:
         return self._vis
 
     def clear(self):
-        pass
+        self._cleared = True
 
     def _relayout(self):
-        pass
+        self._relaid_out = True
 
 
 class _DummyApp:
@@ -311,7 +411,6 @@ def test_toolbar_plugins_view_has_no_install_plugin_button(qapp):
 
 def _make_view(qapp, specs, monkeypatch):
     import neoarch.frontend.components.plugins_view as pv_mod
-    from neoarch.frontend.components.plugins_view import PluginsView
     monkeypatch.setattr(pv_mod, "get_all_plugins_data", lambda: specs)
     monkeypatch.setattr(pv_mod, "get_plugins_data", lambda: specs)
     monkeypatch.setattr(pv_mod.PluginsView, "is_installed", lambda self, spec: False)
@@ -355,7 +454,7 @@ def test_selection_emits_signal_and_batch_installs(qapp, monkeypatch):
     qapp.processEvents()
 
     counts = []
-    view.selection_changed.connect(lambda n: counts.append(n))
+    view.selection_changed.connect(counts.append)
 
     install_emitted = []
     view.install_many_requested.connect(lambda ids: install_emitted.append(list(ids)))
@@ -386,9 +485,10 @@ def test_installed_card_selection_counts_for_clear(qapp, monkeypatch):
     qapp.processEvents()
 
     counts = []
-    view.selection_changed.connect(lambda n: counts.append(n))
+    view.selection_changed.connect(counts.append)
 
-    alpha = next(d for d in view._all_cards if d["plugin"]["id"] == "alpha")
+    alpha = _card_by_id(view, "alpha")
+    assert alpha is not None
     alpha["installed"] = True          # simulate an installed plugin card
     alpha["widget"].set_installed(True)
     alpha["widget"].set_checked(True)
@@ -431,7 +531,8 @@ def test_plugins_view_set_installed_updates_card_data(qapp, monkeypatch):
     qapp.processEvents()
 
     view.set_installed("alpha", True)
-    data = next(d for d in view._all_cards if d["plugin"]["id"] == "alpha")
+    data = _card_by_id(view, "alpha")
+    assert data is not None
     assert data["installed"] is True
     assert [b.text() for b in data["widget"]._action_buttons] == ["Open", "Uninstall"]
 
@@ -439,7 +540,6 @@ def test_plugins_view_set_installed_updates_card_data(qapp, monkeypatch):
 def test_install_many_batches_into_single_operation(qapp, monkeypatch):
     """install_many_by_id merges all packages per source into one install call
     and flips every card to its real installed state on success."""
-    from PyQt6.QtCore import QObject, pyqtSignal
     import neoarch.managers.plugin_manager as pm_mod
     from neoarch.managers.plugin_manager import PluginsManager
 
@@ -458,10 +558,12 @@ def test_install_many_batches_into_single_operation(qapp, monkeypatch):
             self.installed = []
             self.refresh_forced = False
 
-        def get_plugin(self, pid):
+        @staticmethod
+        def get_plugin(pid):
             return specs.get(pid)
 
-        def is_installed(self, spec):
+        @staticmethod
+        def is_installed(spec):
             return False
 
         def set_installing(self, pid, state):
@@ -483,6 +585,9 @@ def test_install_many_batches_into_single_operation(qapp, monkeypatch):
             self.ensure_session_auth = lambda: True
             self.force_sudo_install = False
             self._pending_install_packages = {}
+
+        def set_pending_install(self, packages_by_source):
+            self._pending_install_packages = packages_by_source
 
     app = _App()
     view = _RecordingView()

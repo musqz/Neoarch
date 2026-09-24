@@ -6,7 +6,7 @@
 
 <br/>
 
-[![AUR](https://img.shields.io/badge/AUR-neoarch--git-00BFAE?style=flat-square&labelColor=161B22&logo=archlinux&logoColor=white)](https://aur.archlinux.org/packages/neoarch-git)
+[![AUR](https://img.shields.io/badge/AUR-neoarch-00BFAE?style=flat-square&labelColor=161B22&logo=archlinux&logoColor=white)](https://aur.archlinux.org/packages/neoarch)
 [![Version](https://img.shields.io/github/v/release/Sanjaya-Danushka/Neoarch?style=flat-square&label=Version&color=00BFAE&labelColor=161B22)](https://github.com/Sanjaya-Danushka/Neoarch/releases)
 [![Stars](https://img.shields.io/github/stars/Sanjaya-Danushka/Neoarch?style=flat-square&label=Stars&color=00BFAE&labelColor=161B22)](https://github.com/Sanjaya-Danushka/Neoarch/stargazers)
 [![Last commit](https://img.shields.io/github/last-commit/Sanjaya-Danushka/Neoarch?style=flat-square&label=Last%20commit&color=00BFAE&labelColor=161B22)](https://github.com/Sanjaya-Danushka/Neoarch/commits/dev)
@@ -20,7 +20,7 @@
 > **One app for everything you install.** Search, install, update, and clean across **pacman, AUR (live search), Flatpak, and npm** — from a native PyQt6 desktop app or a headless `neo` CLI with `--json` automation.
 
 > [!NOTE]
-> **📖 Read before use** — the [Wiki](https://github.com/Sanjaya-Danushka/Neoarch/wiki) covers every feature with screenshots, tips, and a video tutorial. Start here before your first install.
+> **📖 Read before use** — the [Wiki](https://github.com/Sanjaya-Danushka/Neoarch/wiki) covers every feature with screenshots, tips, and a video tutorial. Start here before your first install. For the complete [feature overview → wiki/Features](https://github.com/Sanjaya-Danushka/Neoarch/wiki/Features).
 
 ---
 
@@ -65,7 +65,7 @@ and dependencies/source builds are in [Install](#install) below.
 
 ### Safety and maintenance
 
-- **Snapshots** — Timeshift integration (list, create, restore, prune) before risky operations.
+- **Snapshots** — pick your engine, Timeshift **or** Snapper (BTRFS): list, create, revert, delete — automatically before risky operations, with optional pacman hooks so every update captures a Snapper snapshot.
 - **System backups** — Btrfs-aware backups (package list + config export) with auto-prune keeping the last 5.
 - **Hygiene tools** — orphan removal, `.pacnew`/`.pacsave` diffs and merging, cache + BleachBit cleaning, and Arch news with offline caching.
 - **PKGBUILD scanner** — static analysis mode flags risky post-install tools, elevation, dynamic shell, local binaries, and Unicode homograph spoofing (rules ported from [ArchCanary](https://github.com/musqz/archcanary)).
@@ -233,7 +233,7 @@ On Arch, system `pip` usually triggers `externally-managed-environment` — pref
 ## Credits &amp; acknowledgment
 
 - **ArchCanary** — the PKGBUILD security scanner is built on rule sets ported from [ArchCanary](https://github.com/musqz/archcanary) (MIT) by [musqz](https://github.com/musqz), our pre-install scan gate. Thanks for the groundwork.
-- Built on the shoulders of the Arch Linux ecosystem — **pacman**, **AUR helpers** (yay, paru), **Flatpak**, **npm**, **PyQt6**, and **Timeshift**.
+- Built on the shoulders of the Arch Linux ecosystem — **pacman**, **AUR helpers** (yay, paru), **Flatpak**, **npm**, **PyQt6**, and the snapshot backends **Timeshift** &amp; **Snapper**.
 
 ---
 

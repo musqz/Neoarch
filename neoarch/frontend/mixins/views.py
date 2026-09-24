@@ -3,6 +3,7 @@ Views mixin for NeoArch - UI setup, navigation, display, and progress
 """
 
 import os
+import shutil
 import subprocess
 from threading import Thread
 
@@ -433,13 +434,13 @@ class _ViewsMixin:
     def ensure_flathub_user_remote(self):
         try:
             result = subprocess.run([
-                "flatpak", "--user", "remotes"
-            ], capture_output=True, text=True, timeout=10)
+                shutil.which("flatpak") or "flatpak", "--user", "remotes"
+            ], capture_output=True, text=True, timeout=10, check=False)
             if result.returncode != 0 or "flathub" not in (result.stdout or ""):
                 subprocess.run([
-                    "flatpak", "--user", "remote-add", "--if-not-exists",
+                    shutil.which("flatpak") or "flatpak", "--user", "remote-add", "--if-not-exists",
                     "flathub", "https://flathub.org/repo/flathub.flatpakrepo"
-                ], capture_output=True, text=True, timeout=30)
+                ], capture_output=True, text=True, timeout=30, check=False)
         except Exception as e:
             self.log(f"Flathub remote setup failed: {e}")
         self._flathub_checked = True
@@ -788,7 +789,7 @@ class _ViewsMixin:
             env = self.get_askpass_env()
             try:
                 result = subprocess.run(cmd, capture_output=True, text=True,
-                                        timeout=600, env=env)
+                                        timeout=600, env=env, check=False)
             except Exception as e:
                 result = subprocess.CompletedProcess(cmd, 1, "", str(e))
             finally:
@@ -879,7 +880,7 @@ class _ViewsMixin:
                 self.log(f"{label}...")
                 self._show_operation_spinner(label)
                 env = self.get_askpass_env()
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, env=env)
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, env=env, check=False)
                 if result.returncode == 0:
                     self.log(f"{label}: done")
                     self.refresh_packages()
@@ -911,7 +912,6 @@ class _ViewsMixin:
             os.makedirs(dest, exist_ok=True)
             dest_path = os.path.join(dest, os.path.basename(path))
             try:
-                import shutil
                 shutil.copy2(path, dest_path)
                 self.log(f"Copied AppImage to {dest_path}")
             except Exception as e:
@@ -970,6 +970,27 @@ class _ViewsMixin:
         search_input.setPlaceholderText(_("Quick search…"))
         search_input.setFixedWidth(220)
         search_input.setFixedHeight(36)
+        search_input.setStyleSheet("""
+            QLineEdit {
+                background-color: rgba(0, 0, 0, 0.55);
+                border: 1px solid rgba(255, 255, 255, 0.10);
+                border-radius: 12px;
+                padding: 0 14px;
+                color: #FFFFFF;
+                font-size: 13px;
+                selection-background-color: rgba(0, 214, 213, 0.35);
+            }
+            QLineEdit:hover {
+                border: 1px solid rgba(0, 214, 213, 0.35);
+            }
+            QLineEdit:focus {
+                background-color: rgba(0, 0, 0, 0.78);
+                border: 1px solid rgba(0, 214, 213, 0.85);
+            }
+            QLineEdit::placeholder {
+                color: rgba(255, 255, 255, 0.35);
+            }
+        """)
         self.search_input = search_input
         layout.addWidget(search_input)
 
@@ -988,15 +1009,43 @@ class _ViewsMixin:
         refresh_btn.setStyleSheet("""
             QPushButton {
                 background-color: rgba(28, 30, 36, 0.75);
-                border: 1px solid rgba(255,255,255,0.06);
-                border-radius: 10px;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 18px;
             }
             QPushButton:hover {
                 background-color: rgba(34, 36, 42, 0.85);
-                border-color: rgba(255,255,255,0.12);
+                border: 1px solid rgba(0, 214, 213, 0.45);
+            }
+            QPushButton:pressed {
+                background-color: rgba(0, 214, 213, 0.18);
+                border: 1px solid rgba(0, 214, 213, 0.60);
             }
         """)
         layout.addWidget(refresh_btn)
+
+        security_btn = QPushButton()
+        security_btn.setFixedSize(36, 36)
+        security_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        security_icon = os.path.join(_BASE_DIR, "assets", "icons", "toolbar", "shield.svg")
+        security_btn.setIcon(self.get_svg_icon(security_icon, 18))
+        security_btn.setToolTip(_("Security"))
+        security_btn.clicked.connect(self.open_security_settings)
+        security_btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(28, 30, 36, 0.75);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 18px;
+            }
+            QPushButton:hover {
+                background-color: rgba(34, 36, 42, 0.85);
+                border: 1px solid rgba(0, 214, 213, 0.45);
+            }
+            QPushButton:pressed {
+                background-color: rgba(0, 214, 213, 0.18);
+                border: 1px solid rgba(0, 214, 213, 0.60);
+            }
+        """)
+        layout.addWidget(security_btn)
 
         return header
 
@@ -1009,6 +1058,20 @@ class _ViewsMixin:
             QTimer.singleShot(100, self.switch_to_community_tab)
         except Exception as e:
             self._show_message("Community Hub", f"Error opening community hub: {e}")
+
+    def open_security_settings(self):
+        """Open the Settings page on the Security tab from the header button."""
+        try:
+            already = getattr(self, 'current_view', '') == 'settings'
+            self.switch_view('settings')
+            if not already:
+                # build_settings_ui is queued on a 0ms timer by switch_view;
+                # wait for the sidebar + widgets to exist before selecting.
+                QTimer.singleShot(80, lambda: self.switch_settings_category('security'))
+            else:
+                self.switch_settings_category('security')
+        except Exception as e:
+            self._show_message("Settings", f"Error opening security settings: {e}")
 
     def on_plugin_install_requested(self, plugin_id):
         try:
@@ -2387,6 +2450,11 @@ class _ViewsMixin:
             if not getattr(self, '_settings_built', False):
                 self._settings_built = True
                 QTimer.singleShot(0, self.build_settings_ui)
+            else:
+                try:
+                    self.settings_widgets["general"].refresh_source_states()
+                except Exception:
+                    pass
         elif view_id == "about":
             try:
                 self.loading_widget.setVisible(False)
@@ -2415,7 +2483,8 @@ class _ViewsMixin:
                 self.packages_panel_layout.insertWidget(6, self.about_view, 1)
                 # Apply any pending dependency alert now that UI exists
                 self.about_view.set_dep_alert(
-                    getattr(self, '_dep_missing', []))
+                    getattr(self, '_dep_missing', []),
+                    getattr(self, '_dep_optional_missing', []))
             self.about_view.setVisible(True)
             if getattr(self, '_dep_missing', None):
                 # Alert active: land on Diagnostics where the fix lives
@@ -3192,6 +3261,7 @@ class _ViewsMixin:
             'version': pkg.get('version') or '',
             'new_version': pkg.get('version') or '',
             'source': pkg.get('source') or 'pacman',
+            'repo': pkg.get('repo') or '',
             'description': pkg.get('description') or '',
             'download_size': pkg.get('download_size') or '',
             'installed_date': 0,
@@ -3446,6 +3516,9 @@ class _ViewsMixin:
                 return
             if not name:
                 return
+            if not self.confirm_uninstall({source: [name]}):
+                self.log("Uninstall cancelled.")
+                return
             if not self.ensure_session_auth():
                 self.log("Uninstall cancelled: authentication required.")
                 return
@@ -3558,7 +3631,8 @@ class _ViewsMixin:
 
         menu.exec(self.package_table.viewport().mapToGlobal(pos))
 
-    def _load_marks_for(self, name):
+    @staticmethod
+    def _load_marks_for(name):
         from neoarch.backend.services import marks
         try:
             ignore = set(marks.get_ignorepkg())
@@ -3647,7 +3721,7 @@ class _ViewsMixin:
         if self._updating_selection:
             return
         self._updating_selection = True
-        selected_rows = set(index.row() for index in self.package_table.selectionModel().selectedRows())
+        selected_rows = {index.row() for index in self.package_table.selectionModel().selectedRows()}
         for row in range(self.package_table.rowCount()):
             checkbox = self.get_row_checkbox(row)
             if checkbox is not None:
@@ -3754,8 +3828,8 @@ class _ViewsMixin:
             try:
                 if source == 'Flatpak':
                     r = subprocess.run(
-                        ["flatpak", "remote-ls", "--updates", name],
-                        capture_output=True, text=True, timeout=30
+                        [shutil.which("flatpak") or "flatpak", "remote-ls", "--updates", name],
+                        capture_output=True, text=True, timeout=30, check=False
                     )
                     check_ok = True
                     has_updates = r.returncode == 0 and bool(r.stdout.strip())
@@ -3777,8 +3851,8 @@ class _ViewsMixin:
                             new_ver = aur_updates[name]
                 else:
                     r = subprocess.run(
-                        ["pacman", "-Qu", name],
-                        capture_output=True, text=True, timeout=30
+                        [shutil.which("pacman") or "pacman", "-Qu", name],
+                        capture_output=True, text=True, timeout=30, check=False
                     )
                     check_ok = True
                     has_updates = r.returncode == 0 and bool(r.stdout.strip())
@@ -3877,7 +3951,7 @@ class _ViewsMixin:
         else:
             sel_model.select(idx, QItemSelectionModel.SelectionFlag.Deselect | QItemSelectionModel.SelectionFlag.Rows)
 
-        selected_rows = set(index.row() for index in sel_model.selectedRows())
+        selected_rows = {index.row() for index in sel_model.selectedRows()}
         if len(selected_rows) == 1 and row in selected_rows:
             self._show_detail_for_row(row)
         else:
@@ -3934,7 +4008,6 @@ class _ViewsMixin:
 
     def _desktop_notify(self, title, text):
         try:
-            import shutil
             if shutil.which("notify-send") is None:
                 return
             cmd = ["notify-send", "-a", "Neoarch"]
@@ -4103,40 +4176,71 @@ class _ViewsMixin:
 
         Swaps between about.svg and about-fail.svg and forwards the list
         to the About page's Diagnostics tab indicator.
+
+        Only *required* dependencies flag the icon red: optional components
+        (flatpak, npm, docker, fwupd, pipx, \u2026) degrade gracefully and are
+        still listed with their Install button on the Diagnostics page.
         """
         try:
-            self._dep_missing = [m for m in (missing or []) if m]
+            missing = [m for m in (missing or []) if m]
         except Exception:
-            self._dep_missing = []
+            missing = []
+        try:
+            from neoarch.backend.sys_utils import get_dependency_catalog
+            required = {d["name"] for d in get_dependency_catalog()
+                        if d.get("required")}
+            self._dep_missing = [m for m in missing if m in required]
+            self._dep_optional_missing = [m for m in missing if m not in required]
+        except Exception:
+            self._dep_missing = list(missing)
+            self._dep_optional_missing = []
         has_issue = bool(self._dep_missing)
+        has_optional = bool(self._dep_optional_missing)
 
-        lbl = getattr(self, '_about_icon_label', None)
-        if lbl is not None:
+        label = getattr(self, '_about_icon_label', None)
+        about_icon_path = os.path.join(_BASE_DIR, "assets", "icons", "about.svg")
+        about_fail_path = os.path.join(_BASE_DIR, "assets", "icons",
+                                       "about-fail.svg")
+        if label is not None:
             if has_issue:
                 icon = self.get_svg_icon(
-                    os.path.join(_BASE_DIR, "assets", "icons",
-                                 "about-fail.svg"), 24, tint=Colors.RED)
-            else:
+                    about_fail_path, 24, tint=Colors.RED)
+            elif has_optional:
                 icon = self.get_svg_icon(
-                    os.path.join(_BASE_DIR, "assets", "icons", "about.svg"),
-                    24)
+                    about_icon_path, 24, tint=Colors.GREEN)
+            else:
+                icon = self.get_svg_icon(about_icon_path, 24)
             if not icon.isNull():
-                lbl.setPixmap(icon.pixmap(24, 24))
+                label.setPixmap(icon.pixmap(24, 24))
 
         about_btn = getattr(self, 'nav_buttons', {}).get('about')
         if about_btn is not None:
-            about_btn.setToolTip(
-                "About \u2014 dependencies need attention"
-                if has_issue else "About")
+            if has_issue:
+                about_btn.setToolTip(
+                    "About \u2014 dependencies need attention")
+            elif has_optional:
+                about_btn.setToolTip(
+                    "About \u2014 optional components missing")
+            else:
+                about_btn.setToolTip("About")
 
         av = getattr(self, 'about_view', None)
         if av is not None:
-            av.set_dep_alert(self._dep_missing)
+            av.set_dep_alert(
+                self._dep_missing, self._dep_optional_missing)
 
         badge = getattr(self, '_about_dep_badge', None)
         if badge is not None:
-            if has_issue:
-                badge.setText(str(len(self._dep_missing)))
+            if has_issue or has_optional:
+                count = (len(self._dep_missing) if has_issue
+                         else len(self._dep_optional_missing))
+                badge.setStyleSheet(f"""
+                    background-color: {Colors.RED if has_issue else Colors.GREEN};
+                    color: #FFFFFF;
+                    border: none; border-radius: 9px;
+                    font-size: {Fonts.XS}; font-weight: {Fonts.BOLD};
+                """)
+                badge.setText(str(count))
                 badge.adjustSize()
                 badge.setFixedSize(18, 18)
                 badge.show()
@@ -4555,7 +4659,8 @@ class _ViewsMixin:
         except Exception:
             pass
 
-    def _make_circular_pixmap(self, pixmap, size=36):
+    @staticmethod
+    def _make_circular_pixmap(pixmap, size=36):
         result = QPixmap(size, size)
         result.fill(Qt.GlobalColor.transparent)
         painter = QPainter(result)
@@ -4578,8 +4683,9 @@ class _ViewsMixin:
                 data = resp.content if resp.status_code == 200 else None
             except ImportError:
                 import urllib.request
+                from neoarch.backend.services.network import urlopen as _urlopen
                 req = urllib.request.Request(url, headers={"User-Agent": "NeoArch"})
-                data = urllib.request.urlopen(req, timeout=5).read()
+                data = _urlopen(req, timeout=5).read()
 
             if data:
                 pixmap = QPixmap()

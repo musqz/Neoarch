@@ -13,7 +13,10 @@ __all__ = ["load_settings", "save_settings", "export_settings", "import_settings
 DEFAULT_SETTINGS = {
     'auto_check_updates': True,
     'npm_user_mode': True,
-    'include_local_source': True,
+    'include_local_source': False,
+    'include_firmware_updates': True,
+    'check_pipx_updates': True,
+    'auto_update_firmware': False,
     'enabled_plugins': [],
     'bundle_autosave': True,
     'bundle_autosave_path': os.path.join(os.path.expanduser('~'), '.config', 'neoarch', 'bundles', 'default.json'),
@@ -29,6 +32,7 @@ DEFAULT_SETTINGS = {
     'source_accent_colors': True,
     'window_glow': False,
     'window_radius': 8,
+    'window_opacity': 0.75,
     # Notifications
     'notify_desktop': True,
     'notify_inapp': True,

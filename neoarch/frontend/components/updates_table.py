@@ -61,6 +61,8 @@ from PyQt6.QtWidgets import (
 )
 from neoarch.frontend.tokens import Colors, Fonts, SourceColors
 from neoarch.backend.services.i18n import _
+from neoarch.backend.services.repo_map import get_repo_map, refresh_repo_map
+from neoarch.backend.sys_utils import c_locale_env
 
 # ── theme (from centralized tokens.py) ─────────────────────────────
 _ACCENT = QColor(Colors.ACCENT)
@@ -187,7 +189,8 @@ class _EnrichWorker(QObject):
             try:
                 r = subprocess.run(
                     ["pacman", "-Si"] + pacman_names,
-                    capture_output=True, text=True, timeout=120,
+                    capture_output=True, text=True, timeout=120, check=False,
+                    env=c_locale_env(),
                 )
                 if r.stdout:
                     section = {}
@@ -208,7 +211,7 @@ class _EnrichWorker(QObject):
         if flatpak_names:
             try:
                 r = subprocess.run(
-                    ["flatpak", "list", "--columns=application,description"],
+                    [shutil.which("flatpak") or "flatpak", "list", "--columns=application,description"],
                     capture_output=True, text=True, timeout=60, check=False,
                 )
                 if r.returncode == 0 and r.stdout:
@@ -274,6 +277,35 @@ class _EnrichWorker(QObject):
         size = section.get("Download Size", "").strip()
         if size and size != "None":
             entry["download_size"] = size
+        repo = section.get("Repository", "").strip()
+        if repo:
+            entry["repo"] = repo
+
+
+class _RepoWorker(QObject):
+    """Builds the {package: repo} map from ``pacman -Sl`` off the GUI thread.
+
+    Mirrors _EnrichWorker: the object is created in the main thread and its
+    ``done`` signal is queued back to it, so consumers must only mutate the
+    model from the connected slot.
+    """
+
+    done = pyqtSignal(dict)
+
+    def start(self):
+        Thread(target=self._build, daemon=True).start()
+
+    def _build(self):
+        try:
+            mapping = refresh_repo_map()
+        except Exception:
+            mapping = {}
+        try:
+            self.done.emit(mapping)
+        except RuntimeError:
+            # The table (our parent) was torn down while this daemon thread
+            # finished building; nothing is listening any more.
+            pass
 
 
 class UpdatesModel(QAbstractTableModel):
@@ -378,7 +410,28 @@ class UpdatesModel(QAbstractTableModel):
             if changed:
                 self.dataChanged.emit(self.index(row, 1), self.index(row, 3))
 
-    def _sort_key(self, pkg, col):
+    def stamp_repos(self, mapping):
+        """Fill the ``repo`` key on pacman rows from a {name: repo} map.
+
+        Only stamps rows that don't already carry a repo (Discover rows come
+        with one from ``pacman -Ss``). Safe to call from the GUI thread with
+        the cached map; a prewarmed map makes each lookup O(1).
+        """
+        if not mapping:
+            return
+        changed = False
+        for pkg in self._pkgs:
+            if pkg.get("source") != "pacman" or pkg.get("repo"):
+                continue
+            repo = mapping.get(pkg.get("name") or "")
+            if repo:
+                pkg["repo"] = repo
+                changed = True
+        if changed and self.rowCount():
+            self.dataChanged.emit(self.index(0, 0), self.index(self.rowCount() - 1, 0))
+
+    @staticmethod
+    def _sort_key(pkg, col):
         if col == 1:
             return (pkg.get("name") or "").lower()
         if col == 2:
@@ -681,7 +734,8 @@ class _UpdatesHeader(QHeaderView):
         painter.drawLine(int(rect.left()), int(rect.bottom()) - 1, int(rect.right()), int(rect.bottom()) - 1)
         painter.restore()
 
-    def _draw_check(self, painter, r, checked, indeterminate):
+    @staticmethod
+    def _draw_check(painter, r, checked, indeterminate):
         path = QPainterPath()
         path.addRoundedRect(r, 5, 5)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -757,6 +811,10 @@ class UpdatesTable(QTableView):
         self.setModel(self.model)
         self.setItemDelegate(UpdatesRowDelegate(self))
 
+        self._repo_started = False
+        self._repo_worker = _RepoWorker(self)
+        self._repo_worker.done.connect(self._on_repos_ready)
+
         self.setShowGrid(False)
         self.setFrameShape(QTableView.Shape.NoFrame)
         self.viewport().setAutoFillBackground(True)
@@ -811,6 +869,8 @@ class UpdatesTable(QTableView):
         self._loading_enrich = False
         self.model.set_preserve_order(self._plugins_mode)
         self.model.set_packages(packages or [])
+        self.model.stamp_repos(get_repo_map())
+        self._start_repo_prewarm()
         self._header_sync()
         self.set_loading(False)
         self._start_enrich()
@@ -960,6 +1020,8 @@ class UpdatesTable(QTableView):
         if not packages:
             return
         self.model.append_packages(packages)
+        self.model.stamp_repos(get_repo_map())
+        self._start_repo_prewarm()
         self._header_sync()
         self._sync_overlays()
 
@@ -1257,6 +1319,17 @@ class UpdatesTable(QTableView):
 
     # ── enrichment ────────────────────────────────────────────────────
 
+    def _start_repo_prewarm(self):
+        """Kick off the {package: repo} map build once per session."""
+        if self._repo_started:
+            return
+        self._repo_started = True
+        self._repo_worker.start()
+
+    def _on_repos_ready(self, mapping):
+        """Repo map built (GUI thread); stamp rows so the Source badge shows."""
+        self.model.stamp_repos(mapping)
+
     def _start_enrich(self):
         if self._loading_enrich or not self._enrich:
             return
@@ -1364,7 +1437,7 @@ class UpdatesRowDelegate(QStyledItemDelegate):
         elif col == 3:
             self._paint_size(painter, rect, pkg)
         elif col == 4:
-            self._paint_label(painter, rect, pkg.get("source", ""), _TEXT_SEC)
+            self._paint_source_cell(painter, rect, pkg)
         elif col == 5:
             status = pkg.get("status") or classify_update(pkg.get("version"), pkg.get("new_version"))
             self._paint_chip(painter, rect, _(_STATUS_TEXT.get(status, status)), _STATUS_COLORS.get(status, _TEXT_MUTED))
@@ -1538,6 +1611,17 @@ class UpdatesRowDelegate(QStyledItemDelegate):
                          Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.TextSingleLine,
                          el)
 
+    def _paint_source_cell(self, painter, rect, pkg):
+        """Source column: ``Pacman · extra`` for repo packages, plain source
+        otherwise. The repo token comes from ``pkg["repo"]`` — either carried
+        by Discover search results or stamped from the prewarmed -Sl map."""
+        src = pkg.get("source", "") or ""
+        if src == "pacman":
+            repo = pkg.get("repo") or ""
+            if repo:
+                src = f"{src} \u00b7 {repo}"
+        self._paint_label(painter, rect, src, _TEXT_SEC)
+
     def _paint_date(self, painter, rect, pkg):
         text = _fmt_date(pkg.get("installed_date"))
         fm = QFontMetrics(self._ver_font)
@@ -1584,7 +1668,7 @@ def _fallback_description(pkg):
         "AUR": "Arch User Repository package",
         "Flatpak": "Flatpak application",
         "npm": "Global npm package",
-        "Local": "Local update entry",
+        "Firmware": "fwupd device firmware (BIOS/UEFI, controllers, drives)",
     }.get(source, "Update available")
 
 

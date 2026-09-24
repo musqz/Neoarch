@@ -4,6 +4,7 @@ Operations mixin for NeoArch - package install/update/uninstall operations
 
 import os
 import json
+import shutil
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -27,7 +28,8 @@ _aur_scan_cache = {}
 class _OperationsMixin:
     """Mixin providing package operation methods for the main window."""
 
-    def _preflight_aur_scan(self, names):
+    @staticmethod
+    def _preflight_aur_scan(names):
         """Fetch + statically scan AUR PKGBUILDs before installation.
 
         Returns ``{name: [findings]}`` (may contain empty lists). Returns
@@ -340,13 +342,13 @@ class _OperationsMixin:
             self.log("Cleaning package cache\u2026")
             # BleachBit system cache cleaning
             try:
-                r = subprocess.run(["which", "bleachbit"], capture_output=True, text=True, timeout=5)
+                r = subprocess.run([shutil.which("which") or "which", "bleachbit"], capture_output=True, text=True, timeout=5, check=False)
                 if r.returncode == 0:
                     self.log("Running BleachBit cache cleaner\u2026")
                     bb = subprocess.run(
-                        ["bleachbit", "--clean", "system.cache", "system.tmp", "system.trash",
+                        [shutil.which("bleachbit") or "bleachbit", "--clean", "system.cache", "system.tmp", "system.trash",
                          "system.recent_documents", "system.clipboard"],
-                        capture_output=True, text=True, timeout=120,
+                        capture_output=True, text=True, timeout=120, check=False
                     )
                     if bb.returncode == 0:
                         self.log("BleachBit cleaned successfully.")
@@ -360,8 +362,8 @@ class _OperationsMixin:
             try:
                 env = self.get_askpass_env()
                 result = subprocess.run(
-                    ["sudo", "-A", "pacman", "-Sc", "--noconfirm"],
-                    capture_output=True, text=True, timeout=60, env=env,
+                    [shutil.which("sudo") or "sudo", "-A", "pacman", "-Sc", "--noconfirm"],
+                    capture_output=True, text=True, timeout=60, env=env, check=False
                 )
                 if result.returncode == 0:
                     self.log("Pacman cache cleaned successfully.")
@@ -431,14 +433,17 @@ class _OperationsMixin:
         update_service.update_packages(self, packages_by_source)
 
     def _confirm_partial_update(self, packages_by_source):
-        """Warn once before applying a *partial* Arch update.
+        """Warn once before applying a *partial* official-repo update.
 
-        A partial update is any Arch selection smaller than the full set of
-        available pacman/AUR upgrades. Full selections (and selections that
-        are exactly the whole set) skip the dialog. Returns False if the
-        user cancels. Applies to every update entry point, so a single
-        package updated from the detail card or the row menu is not silent
-        either.
+        A partial update is any official (pacman) selection smaller than the
+        full set of available pacman upgrades. AUR selections are excluded
+        from the check entirely: AUR packages build from source against the
+        current system, so they cannot cause the partial-upgrade desync.
+        Full selections (and selections that are exactly the whole set) skip
+        the dialog. Returns False if the user cancels — or chose "Update All",
+        which is then run here. Applies to every update entry point, so a
+        single package updated from the detail card or the row menu is not
+        silent either.
         """
         try:
             from neoarch.frontend.components.partial_update_dialog import (
@@ -446,33 +451,92 @@ class _OperationsMixin:
             available = self._available_arch_updates()
             if not is_partial_update(available, packages_by_source):
                 return True
-            dlg = PartialUpdateDialog(available, packages_by_source, self)
+            dlg = PartialUpdateDialog(
+                self._all_pending_updates(), packages_by_source, self)
             if dlg.exec() != QDialog.DialogCode.Accepted:
                 self.log("Partial update cancelled by user.")
+                return False
+            if dlg.result_choice() == "all":
+                self.log("User chose Update All from the partial-update dialog.")
+                self.perform_update_all()
                 return False
         except Exception as e:
             self.log(f"Partial-update check skipped: {e}")
         return True
 
-    def _available_arch_updates(self):
-        """The pacman/AUR update set for the current page.
+    def set_pending_install(self, packages_by_source):
+        """Record an in-flight install so the UI reflects a pending operation."""
+        self._pending_install_packages = packages_by_source
 
-        Prefers the loaded ``updates_all`` list (Updates page); otherwise
-        falls back to rows in the shared updates table that still have a
-        pending upgrade, which covers the Installed page.
+    def confirm_uninstall(self, packages_by_source):
+        """Confirm a package removal before it runs.
+
+        Removals are destructive and have no undo, so a confirmation dialog
+        lists exactly what will be removed. Returns False if the user
+        cancels. Applied at every uninstall entry point.
+        """
+        try:
+            from neoarch.frontend.components.dark_dialogs import dark_confirm
+        except Exception as e:
+            self.log(f"Uninstall confirmation skipped: {e}")
+            return True
+        summary = ", ".join(
+            f"{pkg} ({src})"
+            for src, pkgs in packages_by_source.items()
+            for pkg in pkgs
+        )
+        if not summary:
+            return False
+        return dark_confirm(
+            self,
+            _("Confirm Uninstall"),
+            _("Uninstall the following package(s)?\n\n{summary}\n\n"
+              "This will remove them from your system and cannot be undone.")
+            .format(summary=summary),
+            danger=True,
+        )
+
+    def _all_pending_updates(self):
+        """Every pending update on the current page (all sources).
+
+        Used to show a truthful "Update All (n)" count in the partial-update
+        dialog: it reflects everything a full upgrade would touch.
         """
         updates = getattr(self, 'updates_all', None) or []
-        arch = [p for p in updates
-                if (p.get('source') or '').upper() in ('PACMAN', 'AUR')]
-        if arch:
-            return arch
+        if updates:
+            return updates
         try:
             tbl = getattr(self, 'updates_table', None)
             pkgs = tbl.model.packages() if tbl is not None else []
         except Exception:
             pkgs = []
         return [p for p in pkgs
-                if (p.get('source') or '').upper() in ('PACMAN', 'AUR')
+                if p.get('new_version')
+                and p.get('new_version') != p.get('version')]
+
+    def _available_arch_updates(self):
+        """The official pacman update set for the current page.
+
+        AUR rows are intentionally not included: they build from source
+        against the current system and cannot cause the partial-upgrade
+        library desync, so they should not weigh into the warning.
+
+        Prefers the loaded ``updates_all`` list (Updates page); otherwise
+        falls back to rows in the shared updates table that still have a
+        pending upgrade, which covers the Installed page.
+        """
+        updates = getattr(self, 'updates_all', None) or []
+        official = [p for p in updates
+                    if (p.get('source') or '').upper() == 'PACMAN']
+        if official:
+            return official
+        try:
+            tbl = getattr(self, 'updates_table', None)
+            pkgs = tbl.model.packages() if tbl is not None else []
+        except Exception:
+            pkgs = []
+        return [p for p in pkgs
+                if (p.get('source') or '').upper() == 'PACMAN'
                 and p.get('new_version')
                 and p.get('new_version') != p.get('version')]
     
@@ -516,7 +580,7 @@ class _OperationsMixin:
         def _build_pacman():
             nonlocal built_any
             if (force or ('pacman' not in _sources) or ('AUR' not in _sources)) and (show_pacman or show_aur):
-                r = subprocess.run(["pacman", "-Qq"], capture_output=True, text=True, timeout=30)
+                r = subprocess.run([shutil.which("pacman") or "pacman", "-Qq"], capture_output=True, text=True, timeout=30, check=False)
                 if r.returncode == 0 and r.stdout:
                     names = [
                         pkg_line.strip()
@@ -536,7 +600,7 @@ class _OperationsMixin:
                 for scope in ([], ["--user"], ["--system"]):
                     try:
                         cmd = ["flatpak"] + scope + ["list", "--app", "--columns=application"]
-                        fp = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                        fp = subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False)
                         if fp.returncode == 0 and fp.stdout:
                             for ln in [x for x in fp.stdout.strip().split('\n') if x.strip()]:
                                 app_id = ln.split('\t')[0].strip()
@@ -553,7 +617,7 @@ class _OperationsMixin:
             import shutil as _sh
             if (force or ('npm' not in _sources)) and show_npm and _sh.which('npm'):
                 results = []
-                np_def = subprocess.run(["npm", "ls", "-g", "--depth=0", "--json"], capture_output=True, text=True, timeout=30)
+                np_def = subprocess.run([shutil.which("npm") or "npm", "ls", "-g", "--depth=0", "--json"], capture_output=True, text=True, timeout=30, check=False)
                 results.append((np_def.returncode, np_def.stdout))
                 env_user = os.environ.copy()
                 try:
@@ -564,7 +628,7 @@ class _OperationsMixin:
                     env_user['PATH'] = os.path.join(npm_prefix, 'bin') + os.pathsep + env_user.get('PATH', '')
                 except Exception:
                     pass
-                np_user = subprocess.run(["npm", "ls", "-g", "--depth=0", "--json"], capture_output=True, text=True, env=env_user, timeout=30)
+                np_user = subprocess.run([shutil.which("npm") or "npm", "ls", "-g", "--depth=0", "--json"], capture_output=True, text=True, env=env_user, timeout=30, check=False)
                 results.append((np_user.returncode, np_user.stdout))
                 for code, out in results:
                     if code == 0 and out and out.strip():
@@ -788,6 +852,9 @@ class _OperationsMixin:
                 packages_by_source[source].append(token)
         
         flat_summary = ', '.join([f"{pkg} ({src})" for src, pkgs in packages_by_source.items() for pkg in pkgs])
+        if not self.confirm_uninstall(packages_by_source):
+            self.log("Uninstall cancelled.")
+            return
         if not self.ensure_session_auth():
             self.log("Uninstall cancelled: authentication required.")
             return
@@ -848,6 +915,12 @@ class _OperationsMixin:
         if source in ('pacman', 'AUR') and not self._db_lock_preflight(
                 operation="Uninstall package"):
             return
+        name = (pkg.get('name') or '').strip()
+        if not name:
+            return
+        if not self.confirm_uninstall({source: [name]}):
+            self.log("Uninstall cancelled.")
+            return
         if not self.ensure_session_auth():
             self.log("Uninstall cancelled: authentication required.")
             return
@@ -866,7 +939,8 @@ class _OperationsMixin:
             if plugin_id and hasattr(self, 'plugins_manager'):
                 self.plugins_manager.launch_by_id(self.plugins_view, plugin_id)
 
-    def _on_ui_call(self, fn):
+    @staticmethod
+    def _on_ui_call(fn):
         try:
             if callable(fn):
                 fn()

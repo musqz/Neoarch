@@ -67,9 +67,10 @@ DARK = {
         "AUR": "#FF8A65",
         "Flatpak": "#26A69A",
         "npm": "#E53935",
-        "Local": "#A3A6B0",
+        "Firmware": "#A3A6B0",
         "Docker": "#2496ED",
         "Brew": "#8B5CF6",
+        "pipx": "#00ACC1",
     },
 }
 
@@ -124,9 +125,10 @@ LIGHT = {
         "AUR": "#E65100",
         "Flatpak": "#00897B",
         "npm": "#D32F2F",
-        "Local": "#6B7280",
+        "Firmware": "#6B7280",
         "Docker": "#1565C0",
         "Brew": "#5C6BC0",
+        "pipx": "#00838F",
     },
 }
 
@@ -181,9 +183,10 @@ DRACULA = {
         "AUR": "#FFB86C",
         "Flatpak": "#50FA7B",
         "npm": "#FF5555",
-        "Local": "#6272A4",
+        "Firmware": "#6272A4",
         "Docker": "#8BE9FD",
         "Brew": "#BD93F9",
+        "pipx": "#8BE9FD",
     },
 }
 
@@ -238,9 +241,10 @@ NORD = {
         "AUR": "#D08770",
         "Flatpak": "#A3BE8C",
         "npm": "#BF616A",
-        "Local": "#616E88",
+        "Firmware": "#616E88",
         "Docker": "#88C0D0",
         "Brew": "#B48EAD",
+        "pipx": "#88C0D0",
     },
 }
 

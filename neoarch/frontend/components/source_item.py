@@ -53,10 +53,12 @@ class ToggleSwitch(QWidget):
             self.toggled.emit(checked)
 
     def toggle(self):
+        if not self.isEnabled():
+            return
         self.setChecked(not self._checked)
 
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
+        if event.button() == Qt.MouseButton.LeftButton and self.isEnabled():
             self.toggle()
             event.accept()
             return
@@ -101,6 +103,13 @@ class ToggleSwitch(QWidget):
         painter.setBrush(QColor(255, 255, 255))
         painter.setPen(QPen(QColor(0, 0, 0, 15), 0.5))
         painter.drawEllipse(knob_rect)
+
+        if not self.isEnabled():
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(8, 8, 10, 110))
+            painter.drawRoundedRect(QRectF(0, track_y, w, track_h), radius, radius)
+            painter.setBrush(QColor(150, 152, 158, 130))
+            painter.drawEllipse(knob_rect)
 
         painter.end()
 
@@ -213,7 +222,7 @@ class SourceItem(QWidget):
 
         _src_key = {
             "pacman": "pacman", "aur": "AUR", "flatpak": "Flatpak",
-            "npm": "npm", "local": "Local",
+            "npm": "npm", "firmware": "Firmware",
         }
         src_name = _src_key.get(self.source_name.lower())
         src_color = SourceColors.get(src_name, Colors.TEXT_3) if src_name else Colors.TEXT_3
@@ -254,7 +263,7 @@ class SourceItem(QWidget):
     def get_accent_color(self, name):
         _src_key = {
             "pacman": "pacman", "aur": "AUR", "flatpak": "Flatpak",
-            "npm": "npm", "local": "Local",
+            "npm": "npm", "firmware": "Firmware",
         }
         src_name = _src_key.get(name.lower())
         return SourceColors.get(src_name, Colors.ACCENT) if src_name else Colors.ACCENT
@@ -360,7 +369,7 @@ class SourceItem(QWidget):
         super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
+        if event.button() == Qt.MouseButton.LeftButton and self.isEnabled():
             self.toggle.toggle()
         super().mouseReleaseEvent(event)
 

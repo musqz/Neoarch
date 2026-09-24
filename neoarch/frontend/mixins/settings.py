@@ -15,8 +15,10 @@ from neoarch.frontend.views.settings_security import SecuritySettingsWidget
 from neoarch.frontend.views.settings_logging import LoggingSettingsWidget
 from neoarch.frontend.views.settings_proxy import ProxySettingsWidget
 from neoarch.frontend.views.settings_maintenance import MaintenanceSettingsWidget
+from neoarch.frontend.views.settings_repos import RepositoriesSettingsWidget
 from neoarch.frontend.views.settings_appearance import AppearanceSettingsWidget
 from neoarch.frontend.tokens import Colors, Fonts, Radii
+from neoarch.frontend.styles import Styles
 
 
 class _SettingsMixin:
@@ -140,6 +142,12 @@ class _SettingsMixin:
         self.settings_nav_buttons["maintenance"] = btn_maintenance
         sidebar_layout.addWidget(btn_maintenance)
 
+        btn_repos = QPushButton(_("Repositories"))
+        btn_repos.setCheckable(True)
+        btn_repos.clicked.connect(lambda: self.switch_settings_category("repos"))
+        self.settings_nav_buttons["repos"] = btn_repos
+        sidebar_layout.addWidget(btn_repos)
+
         sidebar_layout.addStretch()
 
         ## Version badge with edition
@@ -188,13 +196,9 @@ class _SettingsMixin:
         content_scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         content_scroll.setStyleSheet(
-            "QScrollArea { background: transparent; border: none; }"
-            "QScrollBar:vertical { background: transparent; width: 6px; }"
-            "QScrollBar::handle:vertical { background: rgba(255,255,255,0.08);"
-            "  border-radius: 3px; min-height: 30px; }"
-            "QScrollBar::handle:vertical:hover { background: rgba(255,255,255,0.14); }"
-            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
-            f"QWidget#settingsInner {{ background-color: {Colors.BG}; }}")
+            Styles.scrollbar(width=8, color="rgba(255,255,255,0.12)",
+                             hover="rgba(255,255,255,0.22)", min_len=36)
+            + f"\nQWidget#settingsInner {{ background-color: {Colors.BG}; }}")
 
         settings_inner = QWidget()
         settings_inner.setObjectName("settingsInner")
@@ -212,6 +216,7 @@ class _SettingsMixin:
             "logging": LoggingSettingsWidget(self),
             "proxy": ProxySettingsWidget(self),
             "maintenance": MaintenanceSettingsWidget(self),
+            "repos": RepositoriesSettingsWidget(self),
         }
 
         for key, widget in self.settings_widgets.items():
@@ -284,6 +289,12 @@ class _SettingsMixin:
         except (TypeError, ValueError):
             radius = 8
         tokens.WINDOW_RADIUS = max(0, min(radius, 24))
+
+        try:
+            opacity = float(self.settings.get('window_opacity', 0.75))
+        except (TypeError, ValueError):
+            opacity = 0.75
+        tokens.WINDOW_OPACITY = max(0.20, min(opacity, 1.0))
 
         outer = self.centralWidget()
         if outer is not None:

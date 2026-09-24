@@ -1,18 +1,20 @@
 """Package update orchestrator.
 
-Handles updating packages from all sources (pacman, AUR, Flatpak, npm, Local)
-with appropriate privilege elevation.
+Handles updating packages from all sources (pacman, AUR, Flatpak, npm,
+Firmware, pipx) with appropriate privilege elevation.
 """
 
 import os
 import json
 import re
+import shutil
 import subprocess
 from threading import Thread
 
 from neoarch.backend.workers import CommandWorker
 from neoarch.backend.auth import get_askpass_env
 from neoarch.backend import sys_utils
+from neoarch.backend.services.i18n import _
 
 __all__ = [
     "update_packages", "update_core_tools",
@@ -82,8 +84,8 @@ def _clean_pacman_cache(app):
     try:
         env = get_askpass_env()
         subprocess.run(
-            ["sudo", "-A", "pacman", "-Sc", "--noconfirm"],
-            capture_output=True, text=True, timeout=120, env=env,
+            [shutil.which("sudo") or "sudo", "-A", "pacman", "-Sc", "--noconfirm"],
+            capture_output=True, text=True, timeout=120, env=env, check=False
         )
     except Exception:
         pass
@@ -276,7 +278,7 @@ def update_packages(app, packages_by_source: dict, upgrade_all: bool = False):
                     for name in pkgs:
                         placed = False
                         try:
-                            r_user = subprocess.run(["npm", "ls", "-g", name, "--depth=0", "--json"], capture_output=True, text=True, env=env_user, timeout=30) if env_user else None
+                            r_user = subprocess.run([shutil.which("npm") or "npm", "ls", "-g", name, "--depth=0", "--json"], capture_output=True, text=True, env=env_user, timeout=30, check=False) if env_user else None
                             if r_user.returncode in (0, 1) and r_user.stdout:
                                 try:
                                     data = json.loads(r_user.stdout)
@@ -291,7 +293,7 @@ def update_packages(app, packages_by_source: dict, upgrade_all: bool = False):
                         if placed:
                             continue
                         try:
-                            r_sys = subprocess.run(["npm", "ls", "-g", name, "--depth=0", "--json"], capture_output=True, text=True, timeout=30)
+                            r_sys = subprocess.run([shutil.which("npm") or "npm", "ls", "-g", name, "--depth=0", "--json"], capture_output=True, text=True, timeout=30, check=False)
                             if r_sys.returncode in (0, 1) and r_sys.stdout:
                                 try:
                                     data = json.loads(r_sys.stdout)
@@ -337,29 +339,50 @@ def update_packages(app, packages_by_source: dict, upgrade_all: bool = False):
                         app.log("Update cancelled by user")
                         cancelled = True
                         break
-                elif source == 'Local':
-                    entries = { (e.get('id') or e.get('name')): e for e in app.load_local_update_entries() }
-                    for token in pkgs:
-                        e = entries.get(token) or entries.get(token.strip())
-                        if not e:
-                            continue
-                        upd = e.get('update_cmd')
-                        if not upd:
-                            continue
+                elif source == 'pipx':
+                    cmd = ["pipx", "upgrade"] + pkgs
+                    worker = CommandWorker(cmd, sudo=False, cancel_event=app.install_cancel_event)
+                    worker.output.connect(app.log)
+                    worker.line_update.connect(app.log_line_update)
+                    def _on_err_pipx(msg):
+                        nonlocal overall_success
+                        app.log(msg)
+                        overall_success = False
+                        if 'pipx' not in failed_sources:
+                            failed_sources.append('pipx')
+                    worker.error.connect(_on_err_pipx)
+                    worker.run()
+                    emit_progress(f"Completed {source} packages", source_count)
+                    if app.install_cancel_event.is_set():
+                        app.log("Update cancelled by user")
+                        cancelled = True
+                        break
+                elif source == 'Firmware':
+                    cmd = ["fwupdmgr", "update", "--assume-yes"]
+                    worker = CommandWorker(cmd, sudo=True, cancel_event=app.install_cancel_event)
+                    fw_lines = []
+                    worker.output.connect(app.log)
+                    worker.line_update.connect(app.log_line_update)
+                    worker.output.connect(fw_lines.append)
+                    worker.line_update.connect(fw_lines.append)
+
+                    def _on_err_fw(msg):
+                        nonlocal overall_success
+                        app.log(msg)
+                        overall_success = False
+                        if 'Firmware' not in failed_sources:
+                            failed_sources.append('Firmware')
+                    worker.error.connect(_on_err_fw)
+                    worker.run()
+                    treated = "\n".join(fw_lines).lower()
+                    if "reboot" in treated or "restart" in treated:
                         try:
-                            process = subprocess.Popen(["bash", "-lc", upd], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                            while True:
-                                line = process.stdout.readline() if process.stdout else ""
-                                if not line and process.poll() is not None:
-                                    break
-                                if line:
-                                    app.log(line.strip())
-                            _, stderr = process.communicate()
-                            if process.returncode != 0 and stderr:
-                                app.log(f"Error: {stderr}")
-                                overall_success = False
-                        except Exception as ex:
-                            app.log(str(ex))
+                            app.show_message.emit(
+                                _("Firmware Update"),
+                                _("Firmware was updated. A reboot is required to"
+                                  " finish installation."))
+                        except Exception:
+                            pass
                     emit_progress(f"Completed {source} packages", source_count)
                     if app.install_cancel_event.is_set():
                         app.log("Update cancelled by user")

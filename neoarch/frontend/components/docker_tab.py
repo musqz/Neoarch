@@ -528,7 +528,8 @@ class DockerTab(QWidget):
             lambda pos, cid=c['id']: self._context_menu(pos, cid))
         return frame
 
-    def _resource_panel(self):
+    @staticmethod
+    def _resource_panel():
         frame = QFrame()
         frame.setStyleSheet(f"""
             QFrame {{
@@ -802,7 +803,8 @@ class DockerTab(QWidget):
 
     # ── shared helpers ──────────────────────────────────────────────
 
-    def _section_header(self, text):
+    @staticmethod
+    def _section_header(text):
         lbl = QLabel(text)
         lbl.setStyleSheet(
             f"color: {_TEXT}; font-size: {Fonts.BASE}; font-weight: 600;"
@@ -1125,7 +1127,7 @@ class DockerTab(QWidget):
         def task():
             try:
                 result = sp.run(
-                    ["docker", "network", "create", "--driver", driver, name],
+                    [shutil.which("docker") or "docker", "network", "create", "--driver", driver, name],
                     check=False, capture_output=True, text=True, timeout=15,
                 )
                 if result.returncode == 0:
